@@ -289,6 +289,14 @@ def train(hyp, opt, device, tb_writer=None):
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
 
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #     optimizer,
+    #     max_lr=hyp['lr0'],
+    #     epochs=epochs,
+    #     steps_per_epoch=nb,
+    #     pct_start=hyp['warmup_epochs'] / epochs if hyp['warmup_epochs'] else 0.0,
+    # )
+
     # Start training
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
@@ -329,6 +337,15 @@ def train(hyp, opt, device, tb_writer=None):
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
+        # This formats 8 column headers with a width of 10 characters each, preceded by a newline character. Here's what each column represents:
+        # 1. `Epoch`: Current training epoch number
+        # 2. `gpu_mem`: GPU memory usage in GB
+        # 3. `box`: Bounding box loss (localization accuracy)
+        # 4. `obj`: Objectness loss (confidence that an object exists)
+        # 5. `cls`: Classification loss (accuracy of class predictions)
+        # 6. `total`: Combined total loss
+        # 7. `labels`: Number of ground truth objects in the current batch
+        # 8. `img_size`: Size of the input images
         logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
@@ -562,6 +579,8 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--use-sar-dataset', action='store_true', default=True, help='Use SAR dataset for training')
+    parser.add_argument('--sar-coco-annotation-file', type=str, default='/home1/07265/egoh/work/SLICE/eddydet/data/processed/coco_annotations.json', help='Path to the SAR COCO annotation file')
     opt = parser.parse_args()
 
     # Set DDP variables

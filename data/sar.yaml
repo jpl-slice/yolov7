@@ -1,0 +1,7 @@
+# train: /scratch/07265/egoh/eddydet/processed/S1A_*_masked.tif
+# val:   /scratch/07265/egoh/eddydet/processed/S1A_*_masked.tif
+train: /scratch/07265/egoh/eddydet/processed/
+val:   /scratch/07265/egoh/eddydet/processed/
+nc:    1
+names: ["eddy"]
+sar_coco_annotation_file: "/home1/07265/egoh/work/SLICE/eddydet/data/processed/coco_annotations.json"
