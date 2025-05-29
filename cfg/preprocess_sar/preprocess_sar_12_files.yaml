@@ -1,0 +1,14 @@
+
+# configs/base.yaml
+paths:
+  raw_root: ${oc.env:SCRATCH}/asf_bulk_download_mediterranean_test_snap_processed_with_bens_graph
+  processed_root: ${oc.env:SCRATCH}/eddydet/processed_12_files
+  coco_json: ${paths.processed_root}/12_files_coco_annotations.json
+
+preprocess:
+  land_shapefile: data/land_mask/ne_10m_land.shp
+  clip_percentile: 99.0     # null → disable clipping
+  save_masked: true
+  masked_dtype: uint8     # float32 | uint16 | uint8
+  # see: https://gdal.org/en/stable/drivers/raster/gtiff.html#creation-options
+  compress: DEFLATE
