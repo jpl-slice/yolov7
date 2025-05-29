@@ -568,7 +568,6 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--use-sar-dataset', action='store_true', default=True, help='Use SAR dataset for training')
-    parser.add_argument('--sar-coco-annotation-file', type=str, default='/home1/07265/egoh/work/SLICE/eddydet/data/processed/coco_annotations.json', help='Path to the SAR COCO annotation file')    
     opt = parser.parse_args()
 
     # Set DDP variables

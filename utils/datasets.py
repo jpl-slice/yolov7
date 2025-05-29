@@ -4,9 +4,11 @@ import glob
 import logging
 import math
 import os
+import pickle
 import random
 import shutil
 import time
+from copy import deepcopy
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -16,20 +18,28 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image, ExifTags
+from PIL import ExifTags, Image
 from torch.utils.data import Dataset
+from torchvision.ops import ps_roi_align, ps_roi_pool, roi_align, roi_pool
+
+# from pycocotools import mask as maskUtils
+from torchvision.utils import save_image
 from tqdm import tqdm
 
-import pickle
-from copy import deepcopy
-#from pycocotools import mask as maskUtils
-from torchvision.utils import save_image
-from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
-
-from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
-    resample_segments, clean_str
-from utils.torch_utils import torch_distributed_zero_first
+from utils.general import (
+    check_requirements,
+    clean_str,
+    resample_segments,
+    segment2box,
+    segments2boxes,
+    xyn2xy,
+    xywh2xyxy,
+    xywhn2xyxy,
+    xyxy2xywh,
+)
 from utils.sar_dataset import SARTileDetectionDataset
+from utils.torch_utils import torch_distributed_zero_first
+
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
@@ -78,7 +88,41 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                         image_weights=image_weights,
                                         prefix=prefix)
         else:
-            dataset = SARTileDetectionDataset(path, opt.sar_coco_annotation_file, window_size=imgsz, stride=imgsz//4,)
+            import yaml
+
+            # Load the data configuration YAML to make decisions
+            data_yaml_path = opt.data
+            with open(data_yaml_path) as f:
+                # This data_dict is local to create_dataloader
+                loader_data_dict = yaml.load(f, Loader=yaml.SafeLoader)
+
+            is_train_set = "train" in prefix.lower()
+            # # Define keys for the new SARTileDetectionDataset configuration
+            ann_file_key = "train_ann_file" if is_train_set else "val_ann_file"
+            images_key = "train_images" if is_train_set else "val_images"
+            # # Using new SARTileDetectionDataset configuration
+            # current_ann_file = loader_data_dict[ann_file_key]
+            # # .get() allows current_images_path to be None if key is missing or value is null
+            if path.endswith(".json"):  # this is an annotation file
+                current_ann_file = path
+                current_images_path = loader_data_dict.get(images_key)
+            elif path.endswith(".tif") or path.endswith(".tiff") or os.path.isdir(path):
+                current_ann_file = loader_data_dict.get(ann_file_key)
+                current_images_path = path
+
+            if not Path(current_ann_file).exists():
+                raise FileNotFoundError(
+                    f"Annotation file specified in {opt.data} ('{ann_file_key}') not found: {current_ann_file}"
+                )
+            # image_input_path existence is checked inside SARTileDetectionDataset if not None
+
+            dataset = SARTileDetectionDataset(
+                ann_file=current_ann_file,
+                image_input_path=current_images_path,
+                window_size=imgsz,
+                stride=imgsz // 4,  # Default stride from previous SARTile call
+                transform=None,  # TODO: Pass appropriate transforms if augment=True based on hyp
+            )
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None

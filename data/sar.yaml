@@ -1,7 +1,31 @@
-# train: /scratch/07265/egoh/eddydet/processed/S1A_*_masked.tif
-# val:   /scratch/07265/egoh/eddydet/processed/S1A_*_masked.tif
 train: /scratch/07265/egoh/eddydet/processed/
 val:   /scratch/07265/egoh/eddydet/processed/
-nc:    1
+# nc:    1
+# names: ["eddy"]
+
+# Configuration for SARTileDetectionDataset
+
+# Training data
+# Option 1: Specify only annotation file (images sourced from 'file_name' in COCO JSON)
+train_ann_file: /home1/07265/egoh/work/SLICE/yolov7/cfg/preprocess_sar/top_5_annotations.json # coco_annotations.json
+# train_images: null # or omit if not used
+
+# Option 2: Specify annotation file AND an image directory/file
+# train_ann_file: "/path/to/train_coco_annotations.json"
+# train_images: "/scratch/07265/egoh/eddydet/processed/train_geotiffs/" # Directory or specific .tif
+
+# Validation data
+val_ann_file: /home1/07265/egoh/work/SLICE/eddydet/data/processed/coco_annotations.json
+# val_images: null # or omit
+
+# Fallback for original LoadImagesAndLabels (if ann_file keys are missing above)
+# These paths would be used by LoadImagesAndLabels if the SARTile specific keys aren't found.
+# Or, if you want to use SARTileDetectionDataset in its original mode (image_path + global_ann_file),
+# you could adapt create_dataloader to look for these if ann_file_key is missing but a global
+# opt.sar_coco_annotation_file was still somehow available (though we are removing it from args).
+# For clarity, it's better to use the new keys for SARTile.
+# train: /scratch/07265/egoh/eddydet/processed/ # Example path for LoadImagesAndLabels
+# val:   /scratch/07265/egoh/eddydet/processed/   # Example path for LoadImagesAndLabels
+
+nc: 1
 names: ["eddy"]
-sar_coco_annotation_file: "/home1/07265/egoh/work/SLICE/eddydet/data/processed/coco_annotations.json"

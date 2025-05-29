@@ -21,15 +21,23 @@ class SARTileDetectionDataset(Dataset):
     A sliding-window detection dataset over one **or many** SAR GeoTIFF(s),
     returning COCO-style targets per-tile.
 
-    If *image_input_path* is a directory, all ``*.tif`` files inside will be
-    enumerated and matched against *ann_file*. If it's a single ``.tif`` file
-    the original behaviour is preserved.
+    Can be initialized in three ways:
+    1. ann_file only: If *image_input_path* is None, images are sourced
+       directly from the 'file_name' entries in the *ann_file*.
+       'file_name' in COCO JSON should be a full or resolvable relative path.
+    2. Single .tif file: If *image_input_path* is a path to a .tif file,
+       that specific file is processed if listed in *ann_file*.
+    3. Directory of .tif files: If *image_input_path* is a path to a directory,
+       all ``*.tif`` files within that directory that are also listed in
+       *ann_file* are processed. The annotation file must list images present in this directory.
     """
 
     def __init__(
         self,
-        image_input_path: str,  # May be a file or a directory now
         ann_file: str,
+        image_input_path: Optional[
+            str
+        ] = None,  # Not optional, and may be a file or a directory now
         window_size: int = 448,
         stride: int = 224,
         transform: Optional[Compose] = None,
@@ -49,39 +57,90 @@ class SARTileDetectionDataset(Dataset):
         self.shapes: List[Tuple[int, int]] = []
         self._window_paths: List[str] = []  # full path for each window
 
-        p = Path(image_input_path)
-
-        if p.is_dir():
-            # ── directory mode ──────────────────────────────────────
-            tif_paths = sorted(glob.glob(str(p / "*.tif")))
-            tif_basenames = {Path(tp).name for tp in tif_paths}  # O(1) look‑ups
-            # Ensure all images referenced in COCO exist in the folder
-            missing = [
-                img["file_name"]
-                for img in self.coco.dataset["images"]
-                if Path(img["file_name"]).name not in tif_basenames
-            ]
-            if missing:
-                raise FileNotFoundError(
-                    f"The following images listed in {ann_file} are missing in {image_input_path}: {missing}"
-                )
-
-            for tif_path in tif_paths:
-                self._process_single_image(Path(tif_path))
-
-            self.img_files = [
-                f"{Path(fp).stem}_win{i}" for i, fp in enumerate(self._window_paths)
-            ]
-        else:
-            # ── single-file mode (original behaviour) ───────────────────
-            _processed = self._process_single_image(p)
-            if _processed is None:
+        if image_input_path is None:
+            # ── Mode 1: ann_file only ───────────────────────────────────────
+            coco_images_info = self.coco.dataset.get("images", [])
+            if not coco_images_info:
                 raise ValueError(
-                    f"No image entry for {p.name} in {ann_file}. "
-                    "Ensure the GeoTIFF file is listed in the COCO annotations."
+                    f"No images found in the annotation file: {self.ann_file}"
                 )
+
+            processed_count = 0
+            for img_info in coco_images_info:
+                image_path_str = img_info.get("file_name")
+                if not image_path_str:
+                    print(
+                        f"Warning: Image info in {self.ann_file} missing 'file_name': {img_info}. Skipping."
+                    )
+                    continue
+
+                image_path = Path(image_path_str)
+                if not image_path.exists():
+                    print(
+                        f"Warning: Image file not found: {image_path_str} (listed in {self.ann_file}). Skipping this image."
+                    )
+                    continue
+
+                try:
+                    if self._process_single_image(image_path):
+                        processed_count += 1
+                except ValueError as e:
+                    print(
+                        f"Warning: Could not process image {image_path_str} from {self.ann_file} due to: {e}. Skipping."
+                    )
+            if coco_images_info and processed_count == 0:
+                print(
+                    f"Warning: Images were listed in {self.ann_file}, but none could be processed successfully."
+                )
+        else:
+            p = Path(image_input_path)
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"Provided image_input_path does not exist: {image_input_path}"
+                )
+
+            if p.is_dir():
+                # ── Mode 3: directory ──────────────────────────────────────
+                tif_paths = sorted(glob.glob(str(p / "*.tif")))
+                tif_basenames = {Path(tp).name for tp in tif_paths}  # O(1) look‑ups
+                # Ensure all images referenced in COCO exist in the folder
+                missing = [
+                    img["file_name"]
+                    for img in self.coco.dataset["images"]
+                    if Path(img["file_name"]).name not in tif_basenames
+                ]
+                if missing:
+                    raise FileNotFoundError(
+                        f"The following images listed in {ann_file} are missing in {image_input_path}: {missing}"
+                    )
+
+                for tif_path in tif_paths:
+                    self._process_single_image(Path(tif_path))
+            else:
+                # ── Mode 2: single-file mode (original behavior) ───────────────────
+                _processed = self._process_single_image(p)
+                if _processed is None:
+                    raise ValueError(
+                        f"No image entry for {p.name} in {ann_file}. "
+                        "Ensure the GeoTIFF file is listed in the COCO annotations."
+                    )
 
         # ── 3) finalise common attrs ────────────────────────────────────
+        if not self._windows:
+            error_msg = f"No valid windows were generated. "
+            if image_input_path is None:
+                error_msg += f"Images sourced from {self.ann_file}. "
+            else:
+                error_msg += f"Images sourced from {image_input_path} and filtered by {self.ann_file}. "
+            error_msg += (
+                "Ensure image files exist, are accessible, have corresponding annotations, "
+                "and meet windowing criteria (e.g., nodata fraction)."
+            )
+            raise ValueError(error_msg)
+
+        self.img_files = [
+            f"{Path(fp).stem}_win{i}" for i, fp in enumerate(self._window_paths)
+        ]
         self.shapes = np.array(self.shapes, dtype=np.int64)
         self.n = len(self.img_files)
         self.indices = list(range(self.n))
@@ -120,7 +179,7 @@ class SARTileDetectionDataset(Dataset):
         # ── open the raster ────────────────────────────────────────────
         self.src = rasterio.open(str(geotiff_path))
         self.nodata = self.src.nodata if self.src.nodata is not None else -9999.0
-        print(f"{self.nodata=}")
+        print(f"{geotiff_path.name} {self.nodata=}")
 
     def _compute_initial_windows(self) -> List[windows.Window]:
         # ── precompute all valid windows ───────────────────────────────
@@ -143,7 +202,9 @@ class SARTileDetectionDataset(Dataset):
             if Path(img["file_name"]).name == basename
         ]
         if not matches:
-            raise ValueError(f"No image entry for {basename} in {self.ann_file}")
+            # raise ValueError(f"No image entry for {basename} in {self.ann_file}")
+            print(f"No image entry for {basename} in {self.ann_file}")
+            return None
         self.img_id = matches[0]["id"]
         self.anns = self.coco.loadAnns(self.coco.getAnnIds(imgIds=[self.img_id]))
         return basename
