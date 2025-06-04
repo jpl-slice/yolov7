@@ -308,3 +308,46 @@ YOLOv7-3d-detection & YOLOv7-lidar & YOLOv7-road (with NTUT)
 * [https://github.com/TexasInstruments/edgeai-yolov5/tree/yolo-pose](https://github.com/TexasInstruments/edgeai-yolov5/tree/yolo-pose)
 
 </details>
+
+
+---
+
+Edwin's commands to create the 12 file stratified sample:
+
+```shell
+python scripts/01_preprocess_sar.py --cfg cfg/preprocess_sar/preprocess_sar_12_files.yaml --selected cfg/preprocess_sar/stratified_12_files.json
+python scripts/02_build_coco.py --cfg cfg/preprocess_sar/preprocess_sar_12_files.yaml --selected cfg/preprocess_sar/stratified_12_files.json --excel data/WESTMEDEddies_Gade_engl_orig.xlsx --coco_json cfg/preprocess_sar/12_files_annotations.json
+python scripts/03_preview_boxes.py --coco cfg/preprocess_sar/12_files_annotations.json --outdir data/visualization/12_files
+```
+
+Where `preprocess_sar_12_files.yaml` is:
+
+```yaml
+
+# configs/base.yaml
+paths:
+  raw_root: ${oc.env:SCRATCH}/asf_bulk_download_mediterranean_test_snap_processed_with_bens_graph
+  processed_root: ${oc.env:SCRATCH}/eddydet/processed_12_files
+  coco_json: ${paths.processed_root}/12_files_coco_annotations.json
+
+preprocess:
+  land_shapefile: data/land_mask/ne_10m_land.shp
+  clip_percentile: 99.0     # null → disable clipping
+  save_masked: true
+  masked_dtype: uint8     # float32 | uint16 | uint8
+  # see: https://gdal.org/en/stable/drivers/raster/gtiff.html#creation-options
+  compress: DEFLATE
+```
+
+SAR preprocessing commands:
+```bash
+python scripts/01_preprocess_sar.py --cfg cfg/preprocess_sar/preprocess_sar_12_files.yaml --selected cfg/preprocess_sar/stratified_12_files.json
+python scripts/02_build_coco.py --cfg cfg/preprocess_sar/preprocess_sar_12_files.yaml --selected cfg/preprocess_sar/stratified_12_files.json --excel data/WESTMEDEddies_Gade_engl_orig.xlsx --coco_json cfg/preprocess_sar/12_files_annotations.json
+python scripts/03_preview_boxes.py --coco cfg/preprocess_sar/12_files_annotations.json --outdir data/visualization/12_file
+```
+
+
+Train command (try to overfit on 12 images):
+```shell
+python train_aux.py --weights yolov7-e6e.pt --data data/sar_12_files.yaml --cfg cfg/training/yolov7-e6e.yaml --hyp data/hyp.scratch.p6.yaml --img-size 832 --batch 32 --epochs 250 --device 0 --single-cls
+```

@@ -21,7 +21,6 @@ import torch.nn.functional as F
 from PIL import ExifTags, Image
 from torch.utils.data import Dataset
 from torchvision.ops import ps_roi_align, ps_roi_pool, roi_align, roi_pool
-
 # from pycocotools import mask as maskUtils
 from torchvision.utils import save_image
 from tqdm import tqdm
@@ -37,7 +36,6 @@ from utils.general import (
     xywhn2xyxy,
     xyxy2xywh,
 )
-from utils.sar_dataset import SARTileDetectionDataset
 from utils.torch_utils import torch_distributed_zero_first
 
 # Parameters
@@ -90,6 +88,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
         else:
             import yaml
 
+            from utils.sar_dataset_with_augmentation import SARTileDetectionDataset
+
             # Load the data configuration YAML to make decisions
             data_yaml_path = opt.data
             with open(data_yaml_path) as f:
@@ -116,17 +116,35 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                 )
             # image_input_path existence is checked inside SARTileDetectionDataset if not None
 
+            # dataset = SARTileDetectionDataset(
+            #     ann_file=current_ann_file,
+            #     image_input_path=current_images_path,
+            #     window_size=imgsz,
+            #     stride=imgsz // 4,  # Default stride from previous SARTile call
+            #     transform=None,  # TODO: Pass appropriate transforms if augment=True based on hyp
+            #     keep_neg_prob=opt.keep_neg_prob,
+            # )
+            # move "keep_neg_prob" to hyp
+            hyp["keep_neg_prob"] = (
+                opt.keep_neg_prob if hasattr(opt, "keep_neg_prob") else 0.0
+            )
+
             dataset = SARTileDetectionDataset(
-                ann_file=current_ann_file,
+                current_ann_file,
                 image_input_path=current_images_path,
                 window_size=imgsz,
                 stride=imgsz // 4,  # Default stride from previous SARTile call
-                transform=None,  # TODO: Pass appropriate transforms if augment=True based on hyp
+                hyp=hyp,
+                augment=augment,
+                img_size=imgsz,
             )
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
     loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
+    # set shuffle to true if prefix contains train and smapler is none
+    if sampler is None and "train" in prefix.lower():
+        sampler = torch.utils.data.RandomSampler(dataset)
     # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
     dataloader = loader(dataset,
                         batch_size=batch_size,
@@ -1060,8 +1078,18 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
     return img, ratio, (dw, dh)
 
 
-def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
-                       border=(0, 0)):
+def random_perspective(
+    img,
+    targets=(),
+    segments=(),
+    degrees=10,
+    translate=0.1,
+    scale=0.1,
+    shear=10,
+    perspective=0.0,
+    border=(0, 0),
+    border_value=(114, 114, 114),
+):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1100,9 +1128,13 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpPerspective(
+                img, M, dsize=(width, height), borderValue=border_value
+            )
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpAffine(
+                img, M[:2], dsize=(width, height), borderValue=border_value
+            )
 
     # Visualize
     # import matplotlib.pyplot as plt
@@ -1149,7 +1181,9 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     return img, targets
 
 
-def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.1, eps=1e-16):  # box1(4,n), box2(4,n)
+def box_candidates(
+    box1, box2, wh_thr=2, ar_thr=6, area_thr=0.1, eps=1e-16
+):  # box1(4,n), box2(4,n)
     # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
     w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
     w2, h2 = box2[2] - box2[0], box2[3] - box2[1]

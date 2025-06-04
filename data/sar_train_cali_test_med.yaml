@@ -1,0 +1,6 @@
+train: /home1/07265/egoh/work/SLICE/yolov7/ben_cali_tiles_in_tmp/ca_files_coco_annotations.json
+val:   /home1/07265/egoh/work/SLICE/yolov7/cfg/preprocess_sar/12_unseen_files_annotations.json
+train_ann_file: /home1/07265/egoh/work/SLICE/yolov7/ben_cali_tiles_in_tmp/ca_files_coco_annotations.json
+val_ann_file: /home1/07265/egoh/work/SLICE/yolov7/cfg/preprocess_sar/12_unseen_files_annotations.json
+nc: 1
+names: ["eddy"]

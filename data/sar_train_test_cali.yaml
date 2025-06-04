@@ -1,0 +1,6 @@
+train: /scratch/07265/egoh/S1_Eddy_Geotiff_CA_SNAP_trained_sigma0_processed_actual_clip99.5_take2/train.json
+val:   /scratch/07265/egoh/S1_Eddy_Geotiff_CA_SNAP_trained_sigma0_processed_actual_clip99.5_take2/val.json
+train_ann_file: /scratch/07265/egoh/S1_Eddy_Geotiff_CA_SNAP_trained_sigma0_processed_actual_clip99.5_take2/train.json
+val_ann_file: /scratch/07265/egoh/S1_Eddy_Geotiff_CA_SNAP_trained_sigma0_processed_actual_clip99.5_take2/val.json
+nc: 1
+names: ["eddy"]
