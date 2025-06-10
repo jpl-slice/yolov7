@@ -1,0 +1,15 @@
+
+# configs/base.yaml
+paths:
+  raw_root: ${oc.env:SCRATCH}/asf_bulk_download_mediterranean_test_snap_processed_with_bens_graph
+  processed_root: ${oc.env:SCRATCH}/all_med_files_preprocessed
+  coco_json: ${paths.processed_root}/all_med_annotations.json
+
+preprocess:
+  land_shapefile: data/land_mask/ne_10m_land.shp
+  clip_percentile: 99.9     # null → disable clipping
+  save_masked: true
+  masked_dtype: float32     # float32 | uint16 | uint8
+  # see: https://gdal.org/en/stable/drivers/raster/gtiff.html#creation-options
+  compress: DEFLATE
+  convert_to_db: true

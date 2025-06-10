@@ -13,11 +13,12 @@ from __future__ import annotations
 import argparse
 import glob
 import os
-import pathlib
+from pathlib import Path
+import re
 import sys  # Add this import
 
 # Add the project root to the Python path
-project_src = pathlib.Path(__file__).resolve().parent.parent
+project_src = Path(__file__).resolve().parent.parent
 print(f"Adding {project_src} to sys.path")
 sys.path.insert(0, str(project_src))
 
@@ -27,61 +28,81 @@ import rasterio
 from omegaconf import OmegaConf
 from PIL import Image
 from rasterio.enums import Resampling
+from rasterio.warp import transform_bounds
 from tqdm import tqdm
 
-from utils.sar_transforms import MASK_VALUE, mask_land_and_clip
+from utils.sar_transforms import MASK_VALUE, build_land_masker, mask_land_and_clip
 
 
-def main():
+def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", default="cfg/preprocess_sar/preprocess_sar.yaml")
     ap.add_argument("--selected", default="cfg/preprocess_sar/selected_files.json")
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def find_tif_files(selected_json: str, raw_root: Path) -> list[str]:
+    try:
+        with open(selected_json) as fp:
+            return OmegaConf.create(fp.read()).files  # type: ignore[attr-defined]
+    except FileNotFoundError:
+        print(f"!! {selected_json} not found → using all *.tif in {raw_root}")
+        return [p.stem for p in raw_root.glob("*.tif") if p.is_file()]
+
+def main():
+    args = parse_args()
+    cfg = OmegaConf.load(args.cfg)
 
     cfg = OmegaConf.load(args.cfg)
-    raw_root = pathlib.Path(os.path.expandvars(cfg.paths.raw_root))
-    proc_root = pathlib.Path(os.path.expandvars(cfg.paths.processed_root))
+    raw_root = Path(os.path.expandvars(cfg.paths.raw_root))
+    proc_root = Path(os.path.expandvars(cfg.paths.processed_root))
+    vis_root = Path("data/visualisations")
+
     proc_root.mkdir(parents=True, exist_ok=True)
-    vis_root = pathlib.Path("data/visualisations")
     vis_root.mkdir(parents=True, exist_ok=True)
+
     # get selected files
-    try:
-        with open(args.selected) as fp:
-            names = OmegaConf.create(fp.read()).files
-    except FileNotFoundError:
-        # default to all .tifs in raw_root
-        print(f"!! {args.selected} not found, using all .tif files in {raw_root}")
-        names = [p.stem for p in raw_root.glob("*.tif") if p.is_file()]
-    if not names:
+    scene_names = find_tif_files(args.selected, raw_root)
+    if not scene_names:
         print(f"!! No files found in {raw_root}, exiting.")
         sys.exit(1)
 
-    for name in tqdm(names, desc="preprocess"):
-        tif_pattern = raw_root / f"{name}*.tif"
-        matching_files = list(glob.glob(str(tif_pattern)))
+    # Build a *single* callable land masker (loads shapefile once)
+    land_masker = build_land_masker(cfg.preprocess.land_shapefile)
+
+    for name in tqdm(scene_names, desc="preprocess"):
+        matching_files = sorted(raw_root.glob(f"{name}*.tif"))
         if not matching_files:
-            print(f"!! no files matching {tif_pattern}")
-            continue
-        tif = pathlib.Path(matching_files[0])
-        if not tif.exists():
-            print(f"!! missing {tif}")
+            print(f"!! No files matching {name}*.tif in {raw_root}")
             continue
 
-        with rasterio.open(tif) as src:
+        # skip if maked already
+        # out_tif = proc_root / f"{name}.tif"
+        # if out_tif.exists():
+        #     print(f"✓ {out_tif} already exists, skipping.")
+        #     continue
+
+        with rasterio.open(matching_files[0]) as src:
             masked = mask_land_and_clip(
                 src,
-                cfg.preprocess.land_shapefile,
-                cfg.preprocess.clip_percentile,
+                land_masker,
+                clip_percentile=cfg.preprocess.clip_percentile,
+                dilate_px=12,
             )
 
+            # convert to dB
+            if getattr(cfg.preprocess, "convert_to_db", True):
+                epsilon = 1e-10
+                valid = np.isfinite(masked)
+                masked[valid] = 10 * np.log10(masked[valid] + epsilon)
+                masked = np.clip(masked, -35, None)  # set a -35 dB floor
+
+            name = extract_scene_id(matching_files[0].name)
             if cfg.preprocess.save_masked:
-                out_tif = proc_root / f"{name}_masked.tif"
+                out_tif = proc_root / f"{name}.tif"
                 write_masked(
-                    src,
-                    masked,
-                    out_tif,
-                    cfg.preprocess.masked_dtype,
-                    compress=cfg.preprocess.compress,
+                    src, masked, out_tif, cfg.preprocess.masked_dtype,
+                    compress=cfg.preprocess.compress
                 )
 
             quicklook_png = vis_root / f"{name}_preview.png"
@@ -90,12 +111,20 @@ def main():
     print("✓ Preprocessing done.")
 
 
+def extract_scene_id(filename):
+    """Extract Sentinel-1 scene ID from filename."""
+    basename = Path(filename).stem
+    # regex to split on known suffixes and keep only the scene ID part
+    scene_id = re.split(r"_Cal|_ML|_Spk|_TC|_Orb|_processed", basename)[0]
+    return scene_id
+
+
 def write_masked(
     src: rasterio.DatasetReader,
     masked: np.ndarray,
-    out_tif: pathlib.Path,
+    out_tif: Path,
     dtype: str = "float32",
-    compress: str = "LZW",
+    compress: str = "DEFLATE",
     tiled: bool = True,
 ):
     profile = src.profile.copy()
@@ -117,20 +146,16 @@ def write_masked(
     if dtype in ("uint8", "uint16"):
         # linear min-max stretch over valid ocean pixels
         valid = np.isfinite(masked)
-        invalid = ~valid
         data = scale_valid_masked_data(masked, dtype, valid)
-        # set nans to nodata value
-        data[invalid] = MASK_VALUE
-        profile["dtype"] = dtype
+        data[~valid] = MASK_VALUE  # set nans to nodata value
     else:  # float32 passthrough
-        profile["dtype"] = "float32"
-        # replace NaNs with nodata
-        masked = np.where(np.isfinite(masked), masked, MASK_VALUE)
-        data = masked.astype(np.float32)
+        data = np.where(np.isfinite(masked), masked, MASK_VALUE).astype("float32")
+        # data = np.clip(data, 0, 1)
 
     with rasterio.open(out_tif, "w", **profile) as dst:
         dst.write(data, 1)
 
+    return data
 
 def scale_valid_masked_data(
     masked, dtype, valid, percentile: tuple[float, float] = (0, 99)
@@ -178,24 +203,44 @@ def scale_valid_masked_data(
 def quicklook(
     src: rasterio.DatasetReader,
     masked: np.ndarray,
-    out_png: pathlib.Path,
+    out_png: Path,
     rows: int = 2048,
 ):
+    """Save a lat-lon referenced grayscale preview (PNG)."""
     scale = rows / src.height
     cols = max(1, int(src.width * scale))
-    # arr = src.read(1, out_shape=(rows, cols), resampling=Resampling.nearest)
 
     # resample masked array instead using an in-memory rasterio dataset
-    profile = src.profile.copy()
-    profile.update(driver="MEM", nodata=MASK_VALUE)
+    mem_profile = src.profile | {"driver": "MEM", "nodata": MASK_VALUE}
     with rasterio.io.MemoryFile() as memfile:
-        with memfile.open(**profile) as mem:
+        with memfile.open(**mem_profile) as mem:
             mem.write(masked, 1)
             arr = mem.read(1, out_shape=(rows, cols), resampling=Resampling.nearest)
+
+    # 2) Now, figure out the lon/lat bounds for plotting
+    #    Rasterio’s `src.bounds` is in src.crs. If src.crs is not geographic,
+    #    we reproject those bounds into EPSG:4326.
+    try:
+        crs = src.crs
+    except AttributeError:
+        crs = None
+
+    if crs is None:
+        b = src.bounds
+        left, bottom, right, top = (b.left, b.bottom, b.right, b.top)
+    else:
+        left, bottom, right, top = transform_bounds(crs, "EPSG:4326", *src.bounds)
+
+    # Now (left,bottom,right,top) are in lon/lat
+    # 3) Build our lon & lat arrays (in degrees) exactly as before, but now
+    #    they represent true longitudes and latitudes.
+    lon = np.linspace(left, right, cols)
+    lat = np.linspace(top, bottom, rows)
+
     # create matplotlib image with lat-lon coordinates
     fig, ax = plt.subplots(figsize=(cols / 200, rows / 200), dpi=300)
-    lat = np.linspace(src.bounds.top, src.bounds.bottom, rows)  # top to bottom
-    lon = np.linspace(src.bounds.left, src.bounds.right, cols)  # left to right
+    # lat = np.linspace(src.bounds.top, src.bounds.bottom, rows)  # top to bottom
+    # lon = np.linspace(src.bounds.left, src.bounds.right, cols)  # left to right
     im = ax.imshow(
         np.nan_to_num(arr),
         extent=(lon[0], lon[-1], lat[0], lat[-1]),
@@ -204,9 +249,7 @@ def quicklook(
         vmax=np.nanmax(arr),
     )
     ax.set_aspect("equal")
-    ax.set_title(os.path.basename(src.name))
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
+    ax.set(title=Path(src.name).name, xlabel="Longitude", ylabel="Latitude")
     plt.tight_layout()
     fig.colorbar(im, ax=ax, label="SAR intensity", fraction=0.046, pad=0.04)
     fig.savefig(out_png, bbox_inches="tight", dpi=300)
