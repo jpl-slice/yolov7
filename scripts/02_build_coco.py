@@ -13,12 +13,14 @@ import argparse
 import json
 import math
 import os
+import sys
+from glob import glob
+from pathlib import Path
 
 import pandas as pd
 import rasterio
 import rasterio.warp as riowarp
 from omegaconf import OmegaConf
-
 # from pyproj import Geod # Not strictly needed for axis-aligned bbox from diameters
 # from pyproj.exceptions import GeodError
 from tqdm import tqdm
@@ -45,8 +47,24 @@ def main():
     print(f"Using COCO JSON path: {cfg.paths.coco_json}")
     os.makedirs(cfg.paths.processed_root, exist_ok=True)
 
-    with open(args.selected) as fp:
-        keep = set(json.load(fp)["files"])
+    try:
+        with open(args.selected) as fp:
+            keep = OmegaConf.create(fp.read()).files
+    except FileNotFoundError:
+        # default to all .tifs in processed_root
+        processed_root = cfg.paths.processed_root
+        print(f"!! {args.selected} not found, using all .tif files in {processed_root}")
+        # names = [p.stem for p in glob(os.path.join(raw_root, "*.tif")) if os.path.isfile(p)]
+        # fix pathlib
+        keep = [
+            os.path.splitext(os.path.basename(p).split("_masked")[0])[0]
+            for p in glob(os.path.join(processed_root, "*.tif"))
+            if os.path.isfile(p)
+        ]
+
+    if not keep:
+        print(f"!! No files found in {processed_root}, exiting.")
+        sys.exit(1)
 
     df = pd.read_excel(args.excel)
 
@@ -69,11 +87,11 @@ def _make_coco(cfg, keep, df):
     annotations = []
     ann_id = 1
     # geod = Geod(ellps="WGS84") # Keep for potential future use with rotated ellipses
-
+    tif_files = glob(os.path.join(cfg.paths.processed_root, "*.tif"))
     for name in tqdm(keep, desc="COCO dataset generation"):
-        # tif = pathlib.Path(cfg.paths.processed_root) / f"{name}_masked.tif"
-        tif = os.path.join(cfg.paths.processed_root, f"{name}_masked.tif")
-        if not os.path.exists(tif):
+        matching_files = [f for f in tif_files if name in os.path.basename(f)]
+        tif = matching_files[0] if matching_files else None
+        if len(matching_files) == 0:
             print(f"!! {tif} missing - skip")
             continue
 

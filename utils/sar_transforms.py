@@ -12,7 +12,7 @@ Public API
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Callable
+from typing import Callable, Tuple
 
 import geopandas as gpd
 import numpy as np
@@ -73,7 +73,7 @@ def mask_land_and_clip(
         [rasterio.CRS, tuple[float, float, float, float]], list[dict]
     ],
     *,
-    clip_percentile: float | None = 99.0,
+    clip_percentile: float | None | Tuple[float, float] = 99.9,
     dilate_px: int = 0,
 ) -> np.ndarray:
     """Main algorithm: (1) nodata→NaN (2) land mask (3) dilate (4) optional clip."""
@@ -88,8 +88,18 @@ def mask_land_and_clip(
         out = dilate_land_mask(out, dilate_px)
 
     if clip_percentile is not None:
-        hi = np.nanpercentile(out, clip_percentile)
-        out = np.clip(out, None, hi)
+        if isinstance(clip_percentile, tuple):
+            lo, hi = clip_percentile
+            lo = np.nanpercentile(out, lo)
+            hi = np.nanpercentile(out, hi)
+        elif isinstance(clip_percentile, (int, float)):
+            lo = np.nanpercentile(out, 0)
+            hi = np.nanpercentile(out, clip_percentile)
+        else:
+            raise ValueError(
+                f"clip_percentile must be a tuple or a number, got {clip_percentile}"
+            )
+        out = np.clip(out, lo, hi)
 
     return out
 
